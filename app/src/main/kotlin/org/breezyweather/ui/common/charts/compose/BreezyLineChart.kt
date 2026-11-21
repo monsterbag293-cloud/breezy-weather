@@ -21,8 +21,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.shadow.Shadow
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
@@ -214,6 +216,7 @@ fun BreezyLineChart(
             rememberLineCartesianLayer(
                 LineCartesianLayer.LineProvider.series(
                     colors.mapIndexed { index, colorList ->
+                        val colorStops = clampColorStops(colorList, minY, maxY)
                         LineCartesianLayer.rememberLine(
                             fill = LineCartesianLayer.LineFill.colorScale(
                                 if (context.isRtl) {
@@ -222,22 +225,55 @@ fun BreezyLineChart(
                                     Axis.Position.Vertical.End
                                 }
                             ) {
-                                colorList.entries.forEach {
-                                    it.value at it.key
+                                colorStops.forEach { (y, color) ->
+                                    color at y
                                 }
                             },
                             areaFill = if (index == 0) {
-                                LineCartesianLayer.AreaFill.colorScale(
-                                    if (context.isRtl) {
-                                        Axis.Position.Vertical.Start
+                                if (minY != null && maxY > minY && colorStops.isNotEmpty()) {
+                                    val areaFill = if (colorStops.size == 1) {
+                                        Fill(
+                                            Color(
+                                                ColorUtils.setAlphaComponent(
+                                                    colorStops.first().second.toArgb(),
+                                                    (255 * 0.5).roundToInt()
+                                                )
+                                            )
+                                        )
                                     } else {
-                                        Axis.Position.Vertical.End
+                                        val range = maxY - minY
+                                        val gradientStops = colorStops
+                                            .sortedByDescending { it.first }
+                                            .map { (y, color) ->
+                                                val fraction = ((maxY - y) / range).toFloat().coerceIn(0f, 1f)
+                                                val halfAlpha = Color(
+                                                    ColorUtils.setAlphaComponent(
+                                                        color.toArgb(),
+                                                        (255 * 0.5).roundToInt()
+                                                    )
+                                                )
+                                                fraction to halfAlpha
+                                            }
+                                            .toTypedArray()
+                                        Fill(Brush.verticalGradient(*gradientStops))
                                     }
-                                ) {
-                                    colorList.entries.forEach {
-                                        Color(
-                                            ColorUtils.setAlphaComponent(it.value.toArgb(), (255 * 0.5).roundToInt())
-                                        ) at it.key
+                                    LineCartesianLayer.AreaFill.single(
+                                        fill = areaFill,
+                                        splitY = { minY }
+                                    )
+                                } else {
+                                    LineCartesianLayer.AreaFill.colorScale(
+                                        if (context.isRtl) {
+                                            Axis.Position.Vertical.Start
+                                        } else {
+                                            Axis.Position.Vertical.End
+                                        }
+                                    ) {
+                                        colorStops.forEach { (y, color) ->
+                                            Color(
+                                                ColorUtils.setAlphaComponent(color.toArgb(), (255 * 0.5).roundToInt())
+                                            ) at y
+                                        }
                                     }
                                 }
                             } else {
@@ -304,6 +340,58 @@ fun BreezyLineChart(
         scrollState = rememberVicoScrollState(scrollEnabled = false),
         animateIn = SettingsManager.getInstance(context).isElementsAnimationEnabled
     )
+}
+
+private fun clampColorStops(
+    colorList: ImmutableMap<Float, Color>,
+    minY: Double?,
+    maxY: Double,
+): List<Pair<Float, Color>> {
+    if (minY == null || colorList.isEmpty()) {
+        return colorList.entries.map { it.key to it.value }
+    }
+    val minF = minY.toFloat()
+    val maxF = maxY.toFloat()
+    if (maxF <= minF) {
+        return colorList.entries.map { it.key to it.value }
+    }
+    val sorted = colorList.entries
+        .map { it.key to it.value }
+        .sortedBy { it.first }
+
+    val result = mutableListOf<Pair<Float, Color>>()
+    if (sorted.any { it.first < minF }) {
+        result.add(minF to interpolateColorAt(sorted, minF))
+    }
+    sorted.forEach { (y, color) ->
+        if (y in minF..maxF && (result.isEmpty() || result.last().first != y)) {
+            result.add(y to color)
+        }
+    }
+    if (sorted.any { it.first > maxF } && (result.isEmpty() || result.last().first < maxF)) {
+        result.add(maxF to interpolateColorAt(sorted, maxF))
+    }
+    return result
+}
+
+private fun interpolateColorAt(
+    sortedStops: List<Pair<Float, Color>>,
+    targetY: Float,
+): Color {
+    if (targetY <= sortedStops.first().first) return sortedStops.first().second
+    if (targetY >= sortedStops.last().first) return sortedStops.last().second
+
+    for (i in 0 until sortedStops.lastIndex) {
+        val (y0, c0) = sortedStops[i]
+        val (y1, c1) = sortedStops[i + 1]
+        if (targetY <= y1) {
+            if (y1 == y0 || targetY == y0) return c0
+            if (targetY == y1) return c1
+            val fraction = (targetY - y0) / (y1 - y0)
+            return lerp(c0, c1, fraction)
+        }
+    }
+    return sortedStops.last().second
 }
 
 private const val LINE_CHART_HEIGHT_MIN_DP = 100
